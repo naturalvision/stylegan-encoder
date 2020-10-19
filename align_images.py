@@ -5,9 +5,9 @@ import argparse
 from keras.utils import get_file
 from ffhq_dataset.face_alignment import image_align
 from ffhq_dataset.landmarks_detector import LandmarksDetector
-import multiprocessing
 
 LANDMARKS_MODEL_URL = 'http://dlib.net/files/shape_predictor_68_face_landmarks.dat.bz2'
+LANDMARKS_MODEL_LOCAL = 'data/shape_predictor_68_face_landmarks.dat'
 
 
 def unpack_bz2(src_path):
@@ -34,18 +34,30 @@ if __name__ == "__main__":
 
     args, other_args = parser.parse_known_args()
 
-    landmarks_model_path = unpack_bz2(get_file('shape_predictor_68_face_landmarks.dat.bz2',
-                                               LANDMARKS_MODEL_URL, cache_subdir='temp'))
-    RAW_IMAGES_DIR = args.raw_dir
+    # Use locally stored landmarks if available
+    if os.path.isfile(LANDMARKS_MODEL_LOCAL):
+        landmarks_model_path = LANDMARKS_MODEL_LOCAL
+    else:
+        landmarks_model_path = unpack_bz2(get_file('shape_predictor_68_face_landmarks.dat.bz2',
+                                                   LANDMARKS_MODEL_URL, cache_subdir='temp'))
+    landmarks_detector = LandmarksDetector(landmarks_model_path)
+
+    # raw_dir may point to a single image file
+    if os.path.isfile(args.raw_dir):
+        RAW_IMAGES_DIR, img_name = os.path.split(args.raw_dir)
+        raw_images = [img_name]
+    else:
+        RAW_IMAGES_DIR = args.raw_dir
+        raw_images = os.listdir(RAW_IMAGES_DIR)
+
     ALIGNED_IMAGES_DIR = args.aligned_dir
 
-    landmarks_detector = LandmarksDetector(landmarks_model_path)
-    for img_name in os.listdir(RAW_IMAGES_DIR):
+    for img_name in raw_images:
         print('Aligning %s ...' % img_name)
         try:
             raw_img_path = os.path.join(RAW_IMAGES_DIR, img_name)
             fn = face_img_name = '%s_%02d.png' % (os.path.splitext(img_name)[0], 1)
-            if os.path.isfile(fn):
+            if os.path.isfile(fn) and False:
                 continue
             print('Getting landmarks...')
             for i, face_landmarks in enumerate(landmarks_detector.get_landmarks(raw_img_path), start=1):
@@ -53,7 +65,12 @@ if __name__ == "__main__":
                     print('Starting face alignment...')
                     face_img_name = '%s_%02d.png' % (os.path.splitext(img_name)[0], i)
                     aligned_face_path = os.path.join(ALIGNED_IMAGES_DIR, face_img_name)
-                    image_align(raw_img_path, aligned_face_path, face_landmarks, output_size=args.output_size, x_scale=args.x_scale, y_scale=args.y_scale, em_scale=args.em_scale, alpha=args.use_alpha)
+                    image_align(raw_img_path, aligned_face_path, face_landmarks,
+                                output_size=args.output_size,
+                                x_scale=args.x_scale,
+                                y_scale=args.y_scale,
+                                em_scale=args.em_scale,
+                                alpha=args.use_alpha)
                     print('Wrote result %s' % aligned_face_path)
                 except:
                     print("Exception in face alignment!")
