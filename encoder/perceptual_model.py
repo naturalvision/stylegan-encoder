@@ -15,6 +15,11 @@ import keras.backend as K
 import traceback
 import dnnlib.tflib as tflib
 
+LANDMARKS_MODEL_URL = 'http://dlib.net/files/shape_predictor_68_face_landmarks.dat.bz2'
+LANDMARKS_MODEL_LOCAL = 'data/shape_predictor_68_face_landmarks.dat'
+
+VGG16_WEIGHTS_NOTOP_LOCAL = 'data/vgg16_weights_tf_dim_ordering_tf_kernels_notop.h5'
+
 def load_images(images_list, image_size=256, sharpen=False):
     loaded_images = list()
     for img_path in images_list:
@@ -111,9 +116,12 @@ class PerceptualModel:
         if self.face_mask:
             import dlib
             self.detector = dlib.get_frontal_face_detector()
-            LANDMARKS_MODEL_URL = 'http://dlib.net/files/shape_predictor_68_face_landmarks.dat.bz2'
-            landmarks_model_path = unpack_bz2(get_file('shape_predictor_68_face_landmarks.dat.bz2',
-                                                    LANDMARKS_MODEL_URL, cache_subdir='temp'))
+            # Use locally stored landmarks if available
+            if os.path.isfile(LANDMARKS_MODEL_LOCAL):
+                landmarks_model_path = LANDMARKS_MODEL_LOCAL
+            else:
+                landmarks_model_path = unpack_bz2(get_file('shape_predictor_68_face_landmarks.dat.bz2',
+                                                           LANDMARKS_MODEL_URL, cache_subdir='temp'))
             self.predictor = dlib.shape_predictor(landmarks_model_path)
 
     def add_placeholder(self, var_name):
@@ -148,7 +156,12 @@ class PerceptualModel:
         self.add_placeholder("ref_weight")
 
         if (self.vgg_loss is not None):
-            vgg16 = VGG16(include_top=False, input_shape=(self.img_size, self.img_size, 3))
+            # Use locally stored weigths if available
+            if os.path.isfile(VGG16_WEIGHTS_NOTOP_LOCAL):
+                weights = VGG16_WEIGHTS_NOTOP_LOCAL
+            else:
+                weights = 'imagenet'
+            vgg16 = VGG16(include_top=False, weights=weights, input_shape=(self.img_size, self.img_size, 3))
             self.perceptual_model = Model(vgg16.input, vgg16.layers[self.layer].output)
             generated_img_features = self.perceptual_model(preprocess_input(self.ref_weight * generated_image))
             self.ref_img_features = tf.get_variable('ref_img_features', shape=generated_img_features.shape,
@@ -234,7 +247,7 @@ class PerceptualModel:
                 try:
                     _, img_name = os.path.split(images_list[i])
                     mask_img = os.path.join(self.mask_dir, f'{img_name}')
-                    if (os.path.isfile(mask_img)):
+                    if (os.path.isfile(mask_img)) and False:
                         print("Loading mask " + mask_img)
                         imask = PIL.Image.open(mask_img).convert('L')
                         mask = np.array(imask)/255
