@@ -1,6 +1,11 @@
+# Ignore tensorflow deprecation warnings
+import logging
+logging.getLogger("tensorflow").setLevel(logging.ERROR)
+
 import os
 import argparse
 import pickle
+import functools
 from tqdm import tqdm
 import PIL.Image
 from PIL import ImageFilter
@@ -13,6 +18,12 @@ from encoder.perceptual_model import PerceptualModel, load_images
 #from tensorflow.keras.models import load_model
 from keras.models import load_model
 from keras.applications.resnet50 import preprocess_input
+
+STYLEGAN_MODEL_URL = 'https://drive.google.com/uc?id=1MEGjdvVpUsu1jB4zrXZN7Y4kBBOzizDQ'
+STYLEGAN_MODEL_LOCAL = 'data/karras2019stylegan-ffhq-1024x1024.pkl'
+
+PERCEPTUAL_MODEL_URL = 'https://drive.google.com/uc?id=1N2-m9qszOeVC9Tq77WxsLnuWwOedQiD2'
+PERCEPTUAL_MODEL_LOCAL = 'data/vgg16_zhang_perceptual.pkl'
 
 def split_to_batches(l, n):
     for i in range(0, len(l), n):
@@ -37,7 +48,7 @@ def main():
     parser.add_argument('--mask_dir', default='masks', help='Directory for storing optional masks')
     parser.add_argument('--load_last', default='', help='Start with embeddings from directory')
     parser.add_argument('--dlatent_avg', default='', help='Use dlatent from file specified here for truncation instead of dlatent_avg from Gs')
-    parser.add_argument('--model_url', default='https://drive.google.com/uc?id=1MEGjdvVpUsu1jB4zrXZN7Y4kBBOzizDQ', help='Fetch a StyleGAN model to train on from this URL') # karras2019stylegan-ffhq-1024x1024.pkl
+    parser.add_argument('--model_url', default=STYLEGAN_MODEL_URL, help='Fetch a StyleGAN model to train on from this URL') # karras2019stylegan-ffhq-1024x1024.pkl
     parser.add_argument('--model_res', default=1024, help='The dimension of images in the StyleGAN model', type=int)
     parser.add_argument('--batch_size', default=1, help='Batch size for generator and perceptual model', type=int)
     parser.add_argument('--optimizer', default='ggt', help='Optimization algorithm used for optimizing dlatents')
@@ -51,7 +62,7 @@ def main():
     parser.add_argument('--decay_steps', default=4, help='Decay steps for learning rate decay (as a percent of iterations)', type=float)
     parser.add_argument('--early_stopping', default=True, help='Stop early once training stabilizes', type=str2bool, nargs='?', const=True)
     parser.add_argument('--early_stopping_threshold', default=0.5, help='Stop after this threshold has been reached', type=float)
-    parser.add_argument('--early_stopping_patience', default=10, help='Number of iterations to wait below threshold', type=int)    
+    parser.add_argument('--early_stopping_patience', default=10, help='Number of iterations to wait below threshold', type=int)
     parser.add_argument('--load_effnet', default='data/finetuned_effnet.h5', help='Model to load for EfficientNet approximation of dlatents')
     parser.add_argument('--load_resnet', default='data/finetuned_resnet.h5', help='Model to load for ResNet approximation of dlatents')
     parser.add_argument('--use_preprocess_input', default=True, help='Call process_input() first before using feed forward net', type=str2bool, nargs='?', const=True)
@@ -98,8 +109,12 @@ def main():
       import cv2
       synthesis_kwargs = dict(output_transform=dict(func=tflib.convert_images_to_uint8, nchw_to_nhwc=False), minibatch_size=args.batch_size)
 
-    ref_images = [os.path.join(args.src_dir, x) for x in os.listdir(args.src_dir)]
-    ref_images = list(filter(os.path.isfile, ref_images))
+    # src_dir may point to a single image file
+    if os.path.isfile(args.src_dir):
+        ref_images = [args.src_dir]
+    else:
+        ref_images = [os.path.join(args.src_dir, x) for x in os.listdir(args.src_dir)]
+        ref_images = list(filter(os.path.isfile, ref_images))
 
     if len(ref_images) == 0:
         raise Exception('%s is empty' % args.src_dir)
@@ -112,19 +127,35 @@ def main():
 
     # Initialize generator and perceptual model
     tflib.init_tf()
-    with dnnlib.util.open_url(args.model_url, cache_dir=config.cache_dir) as f:
+
+    print("Loading StyleGAN model ... ", end='', flush=True)
+    # Use locally stored model if available
+    if os.path.isfile(STYLEGAN_MODEL_LOCAL):
+        opener = functools.partial(open, STYLEGAN_MODEL_LOCAL, 'rb')
+    else:
+        opener = functools.partial(dnnlib.util.open_url, args.model_url, cache_dir=config.cache_dir)
+    with opener() as f:
         generator_network, discriminator_network, Gs_network = pickle.load(f)
 
     generator = Generator(Gs_network, args.batch_size, clipping_threshold=args.clipping_threshold, tiled_dlatent=args.tile_dlatents, model_res=args.model_res, randomize_noise=args.randomize_noise)
     if (args.dlatent_avg != ''):
         generator.set_dlatent_avg(np.load(args.dlatent_avg))
+    print("done")
 
+    print("Loading perceptual model ... ", end='', flush=True)
     perc_model = None
     if (args.use_lpips_loss > 0.00000001):
-        with dnnlib.util.open_url('https://drive.google.com/uc?id=1N2-m9qszOeVC9Tq77WxsLnuWwOedQiD2', cache_dir=config.cache_dir) as f:
+        # Use locally stored model if available
+        if os.path.isfile(PERCEPTUAL_MODEL_LOCAL):
+            opener = functools.partial(open, PERCEPTUAL_MODEL_LOCAL, 'rb')
+        else:
+            opener = functools.partial(dnnlib.util.open_url, PERCEPTUAL_MODEL_URL, cache_dir=config.cache_dir)
+        with opener() as f:
             perc_model =  pickle.load(f)
+
     perceptual_model = PerceptualModel(args, perc_model=perc_model, batch_size=args.batch_size)
     perceptual_model.build_perceptual_model(generator, discriminator_network)
+    print("done")
 
     ff_model = None
 
@@ -149,14 +180,16 @@ def main():
             if (ff_model is None):
                 if os.path.exists(args.load_resnet):
                     from keras.applications.resnet50 import preprocess_input
-                    print("Loading ResNet Model:")
+                    print("Loading ResNet model ... ", end='', flush=True)
                     ff_model = load_model(args.load_resnet)
+                    print("done")
             if (ff_model is None):
                 if os.path.exists(args.load_effnet):
                     import efficientnet
                     from efficientnet import preprocess_input
-                    print("Loading EfficientNet Model:")
+                    print("Loading EfficientNet model ... ", end='', flush=True)
                     ff_model = load_model(args.load_effnet)
+                    print("done")
             if (ff_model is not None): # predict initial dlatents with ResNet model
                 if (args.use_preprocess_input):
                     dlatents = ff_model.predict(preprocess_input(load_images(images_batch,image_size=args.resnet_image_size)))
@@ -204,6 +237,7 @@ def main():
             prev_loss = loss_dict["loss"]
         if not args.use_best_loss:
             best_loss = prev_loss
+        print()
         print(" ".join(names), " Loss {:.4f}".format(best_loss))
 
         if args.output_video:
