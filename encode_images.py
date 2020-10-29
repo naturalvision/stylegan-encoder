@@ -25,6 +25,26 @@ STYLEGAN_MODEL_LOCAL = 'data/karras2019stylegan-ffhq-1024x1024.pkl'
 PERCEPTUAL_MODEL_URL = 'https://drive.google.com/uc?id=1N2-m9qszOeVC9Tq77WxsLnuWwOedQiD2'
 PERCEPTUAL_MODEL_LOCAL = 'data/vgg16_zhang_perceptual.pkl'
 
+# Repeatable output
+SEED = 28882
+
+config_dict = {
+    'rnd.np_random_seed': None,
+    'rnd.tf_random_seed': None,
+}
+
+def random_seed(seed):
+    # https://stackoverflow.com/a/62907767
+    import os
+    import random
+    import numpy as np
+    import tensorflow as tf
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    os.environ['TF_CUDNN_DETERMINISTIC'] = '1'
+    random.seed(seed)
+    np.random.seed(seed)
+    tf.set_random_seed(seed)
+
 def split_to_batches(l, n):
     for i in range(0, len(l), n):
         yield l[i:i + n]
@@ -52,6 +72,7 @@ def main():
     parser.add_argument('--model_res', default=1024, help='The dimension of images in the StyleGAN model', type=int)
     parser.add_argument('--batch_size', default=1, help='Batch size for generator and perceptual model', type=int)
     parser.add_argument('--optimizer', default='ggt', help='Optimization algorithm used for optimizing dlatents')
+    parser.add_argument('--deterministic', default=False, help='Produce repeatable (but slower) output', type=str2bool, nargs='?', const=True)
 
     # Perceptual model params
     parser.add_argument('--image_size', default=256, help='Size of images for perceptual model', type=int)
@@ -126,7 +147,11 @@ def main():
     os.makedirs(args.video_dir, exist_ok=True)
 
     # Initialize generator and perceptual model
-    tflib.init_tf()
+    if args.deterministic:
+        random_seed(SEED)
+        tflib.init_tf(config_dict)
+    else:
+        tflib.init_tf()
 
     print("Loading StyleGAN model ... ", end='', flush=True)
     # Use locally stored model if available
